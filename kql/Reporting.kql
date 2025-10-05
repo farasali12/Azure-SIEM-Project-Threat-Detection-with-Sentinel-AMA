@@ -1,0 +1,44 @@
+
+// Azure Sentinel / Log Analytics Query
+// Purpose: Detect accounts with multiple failed logon attempts
+//          followed by a successful logon within a short time window
+// Author: Faras Ali
+// --------------------------------------------------------
+
+// Description:
+// This query correlates failed login attempts (Event ID 4625) 
+// with a later successful login (Event ID 4624) from the same
+// account and IP address. It helps identify potential brute-force 
+// attacks where an attacker eventually guesses the right password.
+// --------------------------------------------------------
+
+// STEP 1: Get all failed logon attempts
+let FailedLogons = SecurityEvent
+| where TimeGenerated > ago(7d)                         // analyze last 7 days
+| where EventID == 4625                                 // failed logons
+| extend Account = tostring(coalesce(TargetUserName, SubjectUserName))
+| project TimeGenerated, Account, IpAddress;
+
+
+// STEP 2: Get successful logons from the same IP and Account
+let SuccessfulLogons = SecurityEvent
+| where TimeGenerated > ago(7d)
+| where EventID == 4624                                 // successful logons
+| extend Account = tostring(coalesce(TargetUserName, SubjectUserName))
+| project TimeGenerated, Account, IpAddress;
+
+// STEP 3: Join the failed and successful logons
+GroupedFails
+| where FailCount >= 5                                  // threshold: 5+ failed logons
+| join kind=innerunique (SuccessfulLogons)
+    on Account, IpAddress
+| where TimeGenerated between (LastFail .. LastFail + 10m)  // success within 10 minutes of last fail
+| project 
+    Account,
+    IpAddress,
+    FailCount,
+    FirstFail,
+    LastFail,
+    SuccessTime = TimeGenerated
+| order by SuccessTime desc
+// Reports suspicious accounts.
